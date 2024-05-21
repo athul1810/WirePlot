@@ -1,0 +1,81 @@
+import scapy.all as scapy
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Function to read the packet capture file
+def read_packet_capture(file_path):
+    packets = scapy.rdpcap(file_path)
+    return packets
+
+# Function to extract protocol information and create a DataFrame
+def extract_protocol_info(packets):
+    protocol_counts = {}
+    for packet in packets:
+        try:
+            protocol = packet.getlayer(1).name
+        except AttributeError:
+            continue
+        if protocol not in protocol_counts:
+            protocol_counts[protocol] = 0
+        protocol_counts[protocol] += 1
+    return pd.DataFrame(list(protocol_counts.items()), columns=["Protocol", "PacketCount"])
+
+# Function to plot the graph
+def plot_packet_protocol_graph(df):
+    df.plot(kind='bar', x='Protocol', y='PacketCount', legend=False)
+    plt.xlabel('Protocol')
+    plt.ylabel('Number of Packets')
+    plt.title('Number of Packets vs. Protocol')
+    plt.xticks(rotation=45)
+    plt.show()
+
+# Function to calculate latency and throughput
+def get_latency_and_throughput(packets):
+    start_time = None
+    end_time = None
+    total_bytes = 0
+    for packet in packets:
+        if start_time is None:
+            start_time = packet.time
+        end_time = packet.time
+        total_bytes += len(packet)
+    latency = end_time - start_time
+    throughput = total_bytes / latency
+    return latency, throughput
+
+# Function to calculate scalability
+def get_scalability(packets):
+    num_packets = len(packets)
+    return num_packets
+
+# Function to calculate speed
+def get_speed(latency):
+    return 1 / latency
+
+if __name__ == "__main__":
+    file_path = input("File path (.pcap): ")
+    
+    # Check if the file path exists
+    if not os.path.exists(file_path):
+        print("ERROR: File not Found")
+        exit()
+    
+    packets = read_packet_capture(file_path)
+    latency, throughput = get_latency_and_throughput(packets)
+    scalability = get_scalability(packets)
+    speed = get_speed(latency)
+    
+    print(f"Latency: {latency} seconds")
+    print(f"Throughput: {throughput} bytes/second")
+    print(f"Scalability: {scalability} packets")
+    print(f"Speed: {speed} packets/second")
+    
+    protocol_df = extract_protocol_info(packets)
+    plot_graph = input("\nDo you want to plot the graph? (y/n): ").strip().lower()
+    
+    if plot_graph == "y":
+        print("Plotting graph...")
+        plot_packet_protocol_graph(protocol_df)
+    else:
+        print("Graph not plotted.")
