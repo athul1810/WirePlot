@@ -1,0 +1,426 @@
+import subprocess
+import scapy.all as scapy
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+import random
+
+
+# ANSI colors
+C = "\033[0m"     # clear (end)
+R = "\033[0;31m"  # red (error)
+G = "\033[0;32m"  # green (process)
+B = "\033[0;36m"  # blue (choice)
+Y = "\033[0;33m"  # yellow (info)
+
+
+# generated required packet and sends it
+def send_packet(dest="8.8.8.8", count=100, type=None):
+    try:
+        if type:
+            if type == "TCP":
+                print(f"\n{G}[~]{C} Sending {count} TCP packets...")
+                scapy.send(scapy.IP(dst=dest)/scapy.TCP(dport=53, flags='S'), count=count)
+            elif type == "HTTP":
+                print(f"\n{G}[~]{C} Sending {count} HTTP packets...")
+                scapy.send(scapy.IP(dst=dest)/scapy.TCP(dport=53, flags='S'), count=count)
+            elif type == "UDP":
+                print(f"\n{G}[~]{C} Sending {count} UDP packets...")
+                scapy.send(scapy.IP(dst=dest)/scapy.UDP(dport=53), count=count)
+            elif type == "DNS":
+                print(f"\n{G}[~]{C} Sending {count} DNS packets...")
+                scapy.send(scapy.IP(dst=dest)/scapy.UDP(dport=53)/scapy.DNS(rd=1, qd=scapy.DNSQR(qname="google.com")), count=count)
+            elif type == "ICMP":
+                print(f"\n{G}[~]{C} Sending {count} ICMP packets...")
+                scapy.send(scapy.IP(dst=dest)/scapy.ICMP(),count=count)
+        else:  # if type is not mentioned the 'count' num of randome packets are send
+            print(f"\n{G}[+]{C} Generating {count} random packets...\n")
+            for i in range(count):
+                packet_type = random.choice(["UDP", "TCP", "HTTP", "DNS", "ICMP"])
+                if packet_type == "TCP":
+                    print(f"\n{G}[~]{C} Sending a TCP packet...")
+                    scapy.send(scapy.IP(dst=dest)/scapy.TCP(dport=53, flags='S'), count=1)
+                elif packet_type == "HTTP":
+                    print(f"\n{G}[~]{C} Sending a HTTP packet...")
+                    scapy.send(scapy.IP(dst=dest)/scapy.TCP(dport=53, flags='S'), count=1)
+                elif packet_type == "UDP":
+                    print(f"\n{G}[~]{C} Sending a UDP packet...")
+                    scapy.send(scapy.IP(dst=dest)/scapy.UDP(dport=53), count=1)
+                elif packet_type == "DNS":
+                    print(f"\n{G}[~]{C} Sending a DNS packet...")
+                    scapy.send(scapy.IP(dst=dest)/scapy.UDP(dport=53)/scapy.DNS(rd=1, qd=scapy.DNSQR(qname="google.com")), count=1)
+                elif packet_type == "ICMP":
+                    print(f"\n{G}[~]{C} Sending a ICMP packets...")
+                    scapy.send(scapy.IP(dst=dest)/scapy.ICMP(), count=1)
+
+    except KeyboardInterrupt:
+        print("Packet sending interrupted by the user.")
+    except Exception as e:
+        print(f"Error: {str(e)}")
+
+
+# extracts protocol information and create a dataframe
+def extract_protocol_info(packets):
+    protocol_counts = {}
+    # for layer 1
+    for packet in packets:
+        protocol = packet.getlayer(1).name
+        
+        if protocol not in protocol_counts.keys():
+            protocol_counts[protocol] = 0
+        protocol_counts[protocol] += 1
+    # for layer 2
+    for packet in packets:
+        protocol = packet.getlayer(2)
+        if protocol:  # checking if it's None
+            protocol_name = protocol.name.split()[0]
+            if protocol_name not in protocol_counts.keys():
+                protocol_counts[protocol_name] = 0
+            protocol_counts[protocol_name] += 1
+    # print(protocol_counts) # For Debugging
+
+    return pd.DataFrame(list(protocol_counts.items()), columns=["Protocol", "PacketCount"], index=protocol_counts.keys())
+
+
+def calculate_bandwidth(packet):
+    packet_length = len(packet)
+    capture_time = packet.time
+    if 'previous_time' in calculate_bandwidth.__dict__:
+        time_difference = capture_time - calculate_bandwidth.previous_time
+        if time_difference == 0:
+            bandwidth_bps = 0
+        else:
+            #  bandwidth in bps
+            bandwidth_bps = (packet_length * 8) / time_difference
+    else:
+        bandwidth_bps = 0
+    calculate_bandwidth.previous_time = capture_time
+    return bandwidth_bps
+
+
+def get_packet_timestamps(pcap_file):
+    packet_timestamps = []
+    packets = scapy.rdpcap(pcap_file)
+
+    for packet in packets:
+        if hasattr(packet, 'time'):
+            # Retrieve the timestamp of the packet
+            timestamp = packet.time
+            packet_timestamps.append(timestamp)
+
+    return packet_timestamps
+
+
+def calculate_nw_param(packets):
+    packet_info = []
+    start_time = None
+    end_time = None
+    total_bytes = 0
+    jitter = None
+
+    for i, packet in enumerate(packets):
+        if start_time is None:
+            start_time = packet.time
+        end_time = packet.time
+        total_bytes += len(packet)
+        # calculating latency
+        latency = end_time - start_time
+        # calculating throughput
+        throughput = total_bytes / latency if latency > 0 else 0
+        # calculating bandwidth
+        bandwidth = calculate_bandwidth(packet)
+        # calculating jitter
+        jitter = abs(start_time - packets[i-1].time) if i != 0 else 0
+        # calculating time-to-live
+        ttl = packet[scapy.IP].ttl if scapy.IP in packet else 0
+
+        packet_info.append({
+            'PacketNumber': len(packet_info) + 1,
+            'Latency': latency,
+            'Throughput': throughput,
+            'Bandwidth': bandwidth,
+            'Jitter': jitter,
+            'TTL': ttl,
+        })
+
+    return  pd.DataFrame(packet_info)
+
+
+def get_throughput(df, show_graph=False):
+    total_throughput = df['Throughput'].sum()
+    print(f"Total Throughput: {total_throughput} bytes/second")
+
+    if show_graph:
+        # converting column to numeric data types
+        df['Throughput'] = pd.to_numeric(df['Throughput'], errors='coerce')
+
+        # plot line graph
+        df.plot(x='PacketNumber', y='Throughput', legend=True, label='Throughput', color='#0462c7')
+
+        plt.xlabel('Packet Number')
+        plt.ylabel('Throughput')
+        plt.title('Throughput vs. Packet Number')
+        plt.show()
+
+
+def get_latency(df, show_graph=False):
+    total_latency = df['Latency'].sum()
+    print(f"Total Latency   : {total_latency} seconds")
+
+    if show_graph:
+        # converting column to numeric data types
+        df['Latency'] = pd.to_numeric(df['Latency'], errors='coerce')
+
+        # plot line graph
+        df.plot(x='PacketNumber', y='Latency', legend=True, label='Latency', color='#d90f0f')
+
+        plt.xlabel('Packet Number')
+        plt.ylabel('Latency')
+        plt.title('Latency vs. Packet Number')
+        plt.show()
+
+
+def get_bandwidth(df, show_graph=False):
+    total_bw = df['Bandwidth'].sum()
+    print(f"Total Bandwidth   : {total_bw} bps")
+
+    if show_graph:
+        # converting column to numeric data types
+        df['Bandwidth'] = pd.to_numeric(df['Bandwidth'], errors='coerce')
+
+        # plot line graph
+        df.plot(x='PacketNumber', y='Bandwidth', legend=True, label='Bandwidth', color='#d90f0f')
+
+        plt.xlabel('Packet Number')
+        plt.ylabel('Bandwidth')
+        plt.title('Bandwidth vs. Packet Number')
+        plt.show()
+
+
+def get_jitter(df, show_graph=False, each_packet=False):
+    if each_packet:  # displaying for each individual packet
+        for i, val in enumerate(df['Jitter']):
+            print(f"Packet {i+1} Jitter : {val}")
+    else:
+        total_bw = df['Jitter'].sum()
+        print(f"Total Jitter   : {total_bw} s")
+
+    if show_graph:
+        # converting column to numeric data types
+        df['Jitter'] = pd.to_numeric(df['Jitter'], errors='coerce')
+
+        # plot line graph
+        df.plot(x='PacketNumber', y='Jitter', legend=True, label='Jitter', color='#d90f0f')
+
+        plt.xlabel('Packet Number')
+        plt.ylabel('Jitter')
+        plt.title('Jitter vs. Packet Number')
+        plt.show()
+
+
+def get_ttl(df, show_graph=False, each_packet=False):
+    if each_packet:  # displaying for each individual packet
+        for i, val in enumerate(df['TTL']):
+            if val != 0:
+                print(f"Packet {i+1} TTL : {val}")
+            else:
+                print(f"Packet {i+1} TTL : None (No IP layer found)")
+    else:
+        total_bw = df['TTL'].sum()
+        print(f"Total TTL   : {total_bw} s")
+
+    if show_graph:
+        # converting column to numeric data types
+        df['TTL'] = pd.to_numeric(df['TTL'], errors='coerce')
+
+        # plot line graph
+        df.plot(x='PacketNumber', y='TTL', legend=True, label='TTL', color='#d90f0f')
+
+        plt.xlabel('Packet Number')
+        plt.ylabel('TTL')
+        plt.title('TTL vs. Packet Number')
+        plt.show()
+
+
+# graph functions
+def plot_bar(df):
+    df.plot(kind='bar', x='Protocol', y='PacketCount', legend=True, color=["#56bf15","#00b5af"])
+    plt.xlabel('Protocol')
+    plt.ylabel('Number of Packets')
+    plt.title('Number of Packets vs. Protocol')
+    plt.show()
+
+
+def plot_area(df):
+    df.plot(kind='area', x='Protocol', y='PacketCount', legend=True)
+    plt.xlabel('Protocol')
+    plt.ylabel('Number of Packets')
+    plt.title('Number of Packets vs. Protocol')
+    plt.show()
+
+
+def plot_barh(df):
+    df.plot(kind='barh', x='Protocol', y='PacketCount', legend=True, color=["#56bf15","#00b5af"])
+    plt.xlabel("Number of Packets")
+    plt.ylabel("Protocol")
+    plt.title("Protocol vs. Number of Packets")
+    plt.show()
+
+
+def plot_line(df):
+    df.plot(kind='line', x='Protocol', y='PacketCount', legend=True, color="#d90f0f")
+    plt.xlabel('Protocol')
+    plt.ylabel('Number of Packets')
+    plt.title('Number of Packets vs. Protocol')
+    plt.show()
+
+
+def plot_pie(df):
+    df.plot(kind='pie', y='PacketCount', legend=True, figsize=(5, 5))
+    plt.xlabel('Protocol')
+    plt.ylabel('Number of Packets')
+    plt.title('Number of Packets vs. Protocol')
+    plt.show()
+
+
+def plot_scatter(df):
+    df.plot(kind='scatter', x='Protocol', y='PacketCount', legend=True, c="#0462c7")
+    plt.xlabel('Protocol')
+    plt.ylabel('Number of Packets')
+    plt.title('Number of Packets vs. Protocol')
+    plt.show()
+
+
+def banner():
+    print("""
+     __          ___          _____  _       _   
+     \ \        / (_)        |  __ \| |     | |  
+      \ \  /\  / / _ _ __ ___| |__) | | ___ | |_ 
+       \ \/  \/ / | | '__/ _ \  ___/| |/ _ \| __|      By ALAN S              (22BPS1028)
+        \  /\  /  | | | |  __/ |    | | (_) | |_          MATHEW JOHN         (22BPS1175)
+         \/  \/   |_|_|  \___|_|    |_|\___/ \__|         ATUL KRISHNA BOBAN  (22BAI1422)
+
+    """)
+
+
+
+if __name__ == "__main__":
+    # main menu
+    while True:
+        os.system("cls")
+        banner()
+        print("Choose your operation:\n(1) Open Wireshark for packet capture\n(2) Generate packets\n(3) Open (.pcap/.pcapng) file for packet analysis\n(4) Exit\n")
+        choice = input("Choice : ")
+
+        if choice == "1":
+            print(f"\n{B}[~]{C} Running Wireshark...")
+            subprocess.run(r"F:\Program Files\Wireshark\Wireshark.exe")
+
+        elif choice == "2":
+            destination = input(f"\n{Y}[?]{C} Enter the destination IP (eg: 8.8.8.8) : ")
+            nos = int(input(f"\n{Y}[?]{C}Enter the number of packets to be generated : "))
+
+            while True:
+                os.system("cls")
+                banner()
+                print(f"Choose your operation:\n(1) Generate {nos} RANDOM packets\n(2) Generate {nos} UDP packets\n(3) Generate {nos} TCP packets\n(4) Generate {nos} HTTP packets\n(5) Generate {nos} DNS packets\n(6) Generate {nos} ICMP packets\n(7) Back\n")
+
+                choice = input("Choice : ")
+                if choice == "1":
+                    send_packet(destination, nos)
+                    print(f"\n{G}[+]{C} Packets generated successfully...")
+                    input()
+                elif choice == "2":
+                    send_packet(destination, nos, "UDP")
+                    print(f"\n{G}[+]{C} Packets generated successfully...")
+                    input()
+                elif choice == "3":
+                    send_packet(destination, nos, "TCP")
+                    print(f"\n{G}[+]{C} Packets generated successfully...")
+                    input()
+                elif choice == "4":
+                    send_packet(destination, nos, "HTTP")
+                    print(f"\n{G}[+]{C} Packets generated successfully...")
+                    input()
+                elif choice == "5":
+                    send_packet(destination, nos, "DNS")
+                    print(f"\n{G}[+]{C} Packets generated successfully...")
+                    input()
+                elif choice == "6":
+                    send_packet(destination, nos, "ICMP")
+                    print(f"\n{G}[+]{C} Packets generated successfully...")
+                    input()
+                elif choice == "7":
+                    break
+                else:
+                    print(f"{R}[-]{C} ERROR: Invalid choice, Please try again...")
+                    input()
+
+        elif choice == "3":
+            file_path = input(f"{Y}[?]{C} File path (.pcap/.pcapng) : ")
+            file = file_path.split('\\')[-1]
+            # checking if file exists
+            if not (os.path.exists(file_path)):
+                print(f"\n{R}[-]{C} ERROR: File not Found")
+                input()
+                continue
+            print(f"\n{G}[+]{C} File {file} loaded successfully...")
+            input()
+            
+            packets = scapy.rdpcap(file_path)  # reading data
+            protocol_df = extract_protocol_info(packets)
+            lt_df = calculate_nw_param(packets)
+            # packet analysis menu
+            while True:
+                os.system("cls")
+                banner()
+                print("Choose your operation:\n(1) Calculate Latency\n(2) Calculate Throughput\n(3) Calculate Bandwidth\n(4) Calculate Jitter\n(5) Calculate Time to Live\n(6) Plot Packets vs. Protocol graphs\n(7) Back\n")
+                choice = input("Choice : ")
+                if choice == "1":
+                    get_latency(lt_df, True)  # latency
+                elif choice == "2":
+                    get_throughput(lt_df, True)  # throughput
+                elif choice == "3":
+                    get_bandwidth(lt_df, True)  # bandwidth
+                elif choice == "4":
+                    get_jitter(lt_df, True, True)  # jitter
+                elif choice == "5":
+                    get_ttl(lt_df, True, True)  # time to live
+                elif choice == "6":
+                    # graph menu
+                    while True:
+                        os.system("cls")
+                        banner()
+                        print("Choose the Packets vs. Protocol graph:\n(1) Bar graph\n(2) Horizontal Bar graph\n(3) Area graph\n(4) Line graph\n(5) Pie graph\n(6) Scatter graph\n(7) Back\n")
+                        choice = input("Choice : ")
+
+                        if choice == "1":
+                            plot_bar(protocol_df)
+                        elif choice == "2":
+                            plot_barh(protocol_df)
+                        elif choice == "3":
+                            plot_area(protocol_df)
+                        elif choice == "4":
+                            plot_line(protocol_df)
+                        elif choice == "5":
+                            plot_pie(protocol_df)
+                        elif choice == "6":
+                            plot_scatter(protocol_df)
+                        elif choice == "7":
+                            break
+                        else:
+                            print(f"{R}[-]{C} ERROR: Invalid choice, Please try again...")
+                            input()
+
+                elif choice == "7":
+                    break
+                else:
+                    print(f"{R}[-]{C} ERROR: Invalid choice, Please try again...")
+                    input()
+        elif choice == "4":
+            print(f"\n{B}[~]{C} Exiting WirePlot... Good Bye...")
+            exit()
+
+        else:
+            print(f"{R}[-]{C} ERROR: Invalid choice, Please try again...")
+            input()
